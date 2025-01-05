@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 
 set(CPP_FILES
-    
+    decoder.cpp
 )
 list(TRANSFORM CPP_FILES PREPEND src/${PROJECT_NAME}/)
 
@@ -14,7 +14,7 @@ add_library(${PROJECT_NAME} ${CPP_FILES})
 
 
 ## compiler args
-list(APPEND CLANG_ARGS "-Wall" "-Wextra" "-fno-exceptions" "-fno-rtti")
+list(APPEND CLANG_ARGS "-Wall" "-Wextra" "-fno-rtti")
 
 target_compile_options(${PROJECT_NAME} PUBLIC ${CLANG_ARGS})
 target_compile_options(${PROJECT_NAME} PUBLIC "$<$<CONFIG:RELEASE>:-Werror>")
