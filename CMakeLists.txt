@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.15)
 
 project(DuoDecode VERSION 1.0 LANGUAGES CXX)
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 
 option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 
 set(CPP_FILES
-
+    
 )
 list(TRANSFORM CPP_FILES PREPEND src/${PROJECT_NAME}/)
 
