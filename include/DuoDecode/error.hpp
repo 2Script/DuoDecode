@@ -1,34 +1,42 @@
 #pragma once
+#include <cerrno>
 #include <cstdint>
+#include <result/declare_error_code.h>
 #include <result/result_type.hpp>
 #include <system_error>
 #include <result.hpp>
+extern "C" {
 #include <libavutil/error.h>
+}
 
 
 namespace dd {
     enum class errc : std::int32_t {
+        __posix_end = EHWPOISON,
+        inconsistent_video_format,
+        num_codes = 0,
+
         //avcodec error codes
-        bitstream_filter_not_found   = AVERROR_BSF_NOT_FOUND,
-        internal_bug                 = AVERROR_BUG,
-        buffer_too_small             = AVERROR_BUFFER_TOO_SMALL,
-        decoder_not_found            = AVERROR_DECODER_NOT_FOUND,
-        demuxer_not_found            = AVERROR_DEMUXER_NOT_FOUND,
-        encoder_not_found            = AVERROR_ENCODER_NOT_FOUND,
-        end_of_file                  = AVERROR_EOF,
-        immediate_exit_requested     = AVERROR_EXIT,
-        external_library_error       = AVERROR_EXTERNAL,
-        filter_not_found             = AVERROR_FILTER_NOT_FOUND,
-        invalid_input_data           = AVERROR_INVALIDDATA,
-        muxer_not_found              = AVERROR_MUXER_NOT_FOUND,
-        option_not_found             = AVERROR_OPTION_NOT_FOUND,
-        not_yet_implemented          = AVERROR_PATCHWELCOME,
-        protocol_not_found           = AVERROR_PROTOCOL_NOT_FOUND,
-        stream_not_found             = AVERROR_STREAM_NOT_FOUND,
-        unknown                      = AVERROR_UNKNOWN,
-        experimental_feature         = AVERROR_EXPERIMENTAL,
-        input_changed_between_calls  = AVERROR_INPUT_CHANGED,
-        output_changed_between_calls = AVERROR_OUTPUT_CHANGED,
+        bitstream_filter_not_found   = -AVERROR_BSF_NOT_FOUND,
+        internal_bug                 = -AVERROR_BUG,
+        buffer_too_small             = -AVERROR_BUFFER_TOO_SMALL,
+        decoder_not_found            = -AVERROR_DECODER_NOT_FOUND,
+        demuxer_not_found            = -AVERROR_DEMUXER_NOT_FOUND,
+        encoder_not_found            = -AVERROR_ENCODER_NOT_FOUND,
+        end_of_file                  = -AVERROR_EOF,
+        immediate_exit_requested     = -AVERROR_EXIT,
+        external_library_error       = -AVERROR_EXTERNAL,
+        filter_not_found             = -AVERROR_FILTER_NOT_FOUND,
+        invalid_input_data           = -AVERROR_INVALIDDATA,
+        muxer_not_found              = -AVERROR_MUXER_NOT_FOUND,
+        option_not_found             = -AVERROR_OPTION_NOT_FOUND,
+        not_yet_implemented          = -AVERROR_PATCHWELCOME,
+        protocol_not_found           = -AVERROR_PROTOCOL_NOT_FOUND,
+        stream_not_found             = -AVERROR_STREAM_NOT_FOUND,
+        unknown                      = -AVERROR_UNKNOWN,
+        experimental_feature         = -AVERROR_EXPERIMENTAL,
+        input_changed_between_calls  = -AVERROR_INPUT_CHANGED,
+        output_changed_between_calls = -AVERROR_OUTPUT_CHANGED,
 
 
         //posix error codes
@@ -108,6 +116,9 @@ namespace dd {
         wrong_protocol_type                = static_cast<std::int32_t>(std::errc::wrong_protocol_type),
     };
 }
+
+OL_RESULT_DECLARE_AS_ERROR_CODE(dd, errc, nullptr, nullptr, duodecode);
+
 
 namespace dd {
     template<typename T>

@@ -1,7 +1,9 @@
 #pragma once 
+extern "C" {
+#include <libavutil/mem.h>
+}
 
-namespace dd {
-namespace impl {
+namespace dd::impl {
     template<typename T, void(&DeleterFn)(T**)>
     class av_ptr {
     public:
@@ -24,16 +26,20 @@ namespace impl {
         }
         constexpr av_ptr& operator=(av_ptr&& other) noexcept {
             if(handle && handle != other.handle) DeleterFn(&handle);
-            handle = other.handle; 
+            handle = other.handle;
             other.handle = nullptr;
             return *this;
         };
 
         av_ptr(const av_ptr& other) = delete;
         av_ptr& operator=(const av_ptr& other) = delete;
+
+        constexpr av_ptr& operator=(T* ptr) noexcept {
+            handle = ptr;
+            return *this;
+        };
     
     protected:
         T* handle = nullptr;
     };
-}
 }
