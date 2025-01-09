@@ -2,6 +2,7 @@
 #include <llfio/v2.0/file_handle.hpp>
 #include <memory>
 #include <result/type_traits.hpp>
+#include <result/verify.h>
 #include <type_traits>
 #include "DuoDecode/av_types.hpp"
 #include "DuoDecode/error.hpp"
@@ -66,6 +67,7 @@ namespace dd {
 
 namespace dd {
     result<void> decoder::decode_audio() noexcept {
+        return {};
     }
 }
 
@@ -73,27 +75,11 @@ namespace dd {
     result<decoded_video> decoder::decode_video(AVHWDeviceType device_type) noexcept {
         int ret = 0, video_stream_idx = 0;
         AVCodec const* decoder = nullptr;
-        AVStream* video_stream;
-        AVPixelFormat desired_pixel_format;
-
-        if(device_type == AV_HWDEVICE_TYPE_NONE)
-            return errc::invalid_argument;
+        AVStream* video_stream = nullptr;
         
         if((ret = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0)) < 0)
             return static_cast<errc>(-ret);
         video_stream_idx = ret;
-
-        for(int i = 0;; ++i) {
-            AVCodecHWConfig const* config = avcodec_get_hw_config(decoder, i);
-            if(!config) {
-                desired_pixel_format = hw_pixel_formats[device_type];
-                break;
-            }
-            if(config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX && config->device_type == device_type){
-                desired_pixel_format = config->pix_fmt;
-                break;
-            }
-        }
 
         if(!(dec_ctx = avcodec_alloc_context3(decoder)))
             return errc::not_enough_memory;
@@ -102,17 +88,9 @@ namespace dd {
         if((ret = avcodec_parameters_to_context(dec_ctx, video_stream->codecpar)) < 0)
             return static_cast<errc>(-ret);
 
-        dec_ctx->opaque = &desired_pixel_format;
-        dec_ctx->get_format = [](AVCodecContext* ctx, AVPixelFormat const* pixel_formats) noexcept -> AVPixelFormat {
-            for(AVPixelFormat const* pix_fmts = pixel_formats; *pix_fmts != AV_PIX_FMT_NONE; ++pix_fmts) 
-                if(*pix_fmts == *static_cast<AVPixelFormat*>(ctx->opaque))
-                    return *pix_fmts;
-            return AV_PIX_FMT_NONE;
-        };
 
-        if ((ret = av_hwdevice_ctx_create(&device_ctx, device_type, nullptr, nullptr, 0)) < 0)
-            return static_cast<errc>(-ret);
-        dec_ctx->hw_device_ctx = av_buffer_ref(device_ctx);
+        if(device_type != AV_HWDEVICE_TYPE_NONE)
+            RESULT_VERIFY(create_hw_context(device_type, decoder));
 
         if((ret = avcodec_open2(dec_ctx, decoder, nullptr)) < 0)
             return static_cast<errc>(-ret);
@@ -120,6 +98,13 @@ namespace dd {
         av_vector<std::byte> ret_buffer;
         std::unique_ptr<AVPixelFormat> format;
         std::unique_ptr<int> width, height;
+
+        frame frame;
+        if(!(frame = av_frame_alloc())) {
+            ret = -static_cast<int>(errc::not_enough_memory);
+            goto unref;
+        }
+
     read_frame:
         while(true) {
             if((ret = av_read_frame(fmt_ctx, pkt)) < 0) goto flush;
@@ -130,13 +115,6 @@ namespace dd {
         if((ret = avcodec_send_packet(dec_ctx, pkt)) < 0) goto unref;
 
         while(true) {
-            frame frame;
-
-            if(!(frame = av_frame_alloc())) {
-                ret = -static_cast<int>(errc::not_enough_memory);
-                goto unref;
-            }
-
             if((ret = avcodec_receive_frame(dec_ctx, frame)) < 0)
                 goto unref;
 
@@ -178,6 +156,40 @@ namespace dd {
 namespace dd {
     result<void> decoder::close() noexcept {
         return static_cast<result<void>>(file_handle.close());
+    }
+}
+
+
+namespace dd {
+    result<void> decoder::create_hw_context(AVHWDeviceType device_type, AVCodec const* decoder) noexcept {
+        AVPixelFormat desired_pixel_format = AV_PIX_FMT_NONE;
+
+        for(int i = 0;; ++i) {
+            AVCodecHWConfig const* config = avcodec_get_hw_config(decoder, i);
+            if(!config) {
+                desired_pixel_format = hw_pixel_formats[device_type];
+                break;
+            }
+            if(config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX && config->device_type == device_type){
+                desired_pixel_format = config->pix_fmt;
+                break;
+            }
+        }
+
+        dec_ctx->opaque = &desired_pixel_format;
+        dec_ctx->get_format = [](AVCodecContext* ctx, AVPixelFormat const* pixel_formats) noexcept -> AVPixelFormat {
+            for(AVPixelFormat const* pix_fmts = pixel_formats; *pix_fmts != AV_PIX_FMT_NONE; ++pix_fmts) 
+                if(*pix_fmts == *static_cast<AVPixelFormat*>(ctx->opaque))
+                    return *pix_fmts;
+            return AV_PIX_FMT_NONE; 
+        };
+
+        
+        if (int ret = av_hwdevice_ctx_create(&device_ctx, device_type, nullptr, nullptr, 0); ret < 0)
+            return static_cast<errc>(-ret);
+        dec_ctx->hw_device_ctx = av_buffer_ref(device_ctx);
+
+        return {};
     }
 }
 

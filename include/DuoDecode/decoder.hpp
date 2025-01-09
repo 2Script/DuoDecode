@@ -18,18 +18,18 @@ namespace dd {
         result<decoded_video> decode_video(AVHWDeviceType device_type) noexcept;
         result<void> close() noexcept;
 
+    private:
+        result<void> create_hw_context(AVHWDeviceType device_type, AVCodec const* decoder) noexcept;
+
     public:
         constexpr static std::size_t device_type_count = AV_HWDEVICE_TYPE_D3D12VA + 1;
         std::array<bool, device_type_count> device_types() const noexcept;
-        constexpr AVHWDeviceType& selected_device_type() noexcept { return device_type; }
-        constexpr AVHWDeviceType const& selected_device_type() const noexcept { return device_type; }
 
     private:
         constexpr static std::size_t io_buffer_size = 0x1000;
 
         filesystem::mapped_file_handle file_handle;
         impl::byte_span data = {}, io_buffer;
-        AVHWDeviceType device_type = AV_HWDEVICE_TYPE_NONE;
         
 
         format_context fmt_ctx;
