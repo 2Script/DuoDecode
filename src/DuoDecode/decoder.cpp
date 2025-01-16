@@ -1,11 +1,17 @@
 #include "DuoDecode/decoder.hpp"
-#include <llfio/v2.0/file_handle.hpp>
+#include <climits>
+#include <iterator>
 #include <memory>
 #include <result/type_traits.hpp>
 #include <result/verify.h>
 #include <type_traits>
+#include <zstring.hpp>
 #include "DuoDecode/av_types.hpp"
+#include "DuoDecode/decoded_media.hpp"
 #include "DuoDecode/error.hpp"
+#include "DuoDecode/impl/byte_span.hpp"
+#include "DuoDecode/impl/copy.hpp"
+#include "DuoDecode/media_type.hpp"
 #include "DuoDecode/packet_handler.hpp"
 extern "C" {
 #include <libavutil/frame.h>
@@ -19,6 +25,9 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/mem.h>
 #include <libavutil/pixfmt.h>
+#include <libavutil/avutil.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/samplefmt.h>
 }
 
 
@@ -39,119 +48,10 @@ namespace dd {
         }
         //TODO move above to file_decoder
 
-
-        if(!(fmt_ctx = avformat_alloc_context()))
-            return errc::not_enough_memory;
-
-        io_buffer = {static_cast<std::byte*>(av_malloc(io_buffer_size)), io_buffer_size};
-        if(!io_buffer.ptr)
-            return errc::not_enough_memory;
-
-        if(!(io_ctx = avio_alloc_context(reinterpret_cast<unsigned char*>(io_buffer.ptr), io_buffer.size, 0, &data, &packet_handler::read, &packet_handler::write, nullptr)))
-            return errc::not_enough_memory;
-        fmt_ctx->pb = io_ctx;
-
-        if(!(pkt = av_packet_alloc()))
-            return errc::not_enough_memory;
-
-        int ret = 0;
-        if((ret = avformat_open_input(&fmt_ctx, nullptr, nullptr, nullptr)) < 0)
-            return static_cast<errc>(-ret);
-
-        if((ret = avformat_find_stream_info(fmt_ctx, nullptr)) < 0)
-            return static_cast<errc>(-ret);
-
         return {};
     }
 }
 
-namespace dd {
-    result<void> decoder::decode_audio() noexcept {
-        return {};
-    }
-}
-
-namespace dd {
-    result<decoded_video> decoder::decode_video(AVHWDeviceType device_type) noexcept {
-        int ret = 0, video_stream_idx = 0;
-        AVCodec const* decoder = nullptr;
-        AVStream* video_stream = nullptr;
-        
-        if((ret = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0)) < 0)
-            return static_cast<errc>(-ret);
-        video_stream_idx = ret;
-
-        if(!(dec_ctx = avcodec_alloc_context3(decoder)))
-            return errc::not_enough_memory;
-        
-        video_stream = fmt_ctx->streams[video_stream_idx];
-        if((ret = avcodec_parameters_to_context(dec_ctx, video_stream->codecpar)) < 0)
-            return static_cast<errc>(-ret);
-
-
-        if(device_type != AV_HWDEVICE_TYPE_NONE)
-            RESULT_VERIFY(create_hw_context(device_type, decoder));
-
-        if((ret = avcodec_open2(dec_ctx, decoder, nullptr)) < 0)
-            return static_cast<errc>(-ret);
-
-        av_vector<std::byte> ret_buffer;
-        std::unique_ptr<AVPixelFormat> format;
-        std::unique_ptr<int> width, height;
-
-        frame frame;
-        if(!(frame = av_frame_alloc())) {
-            ret = -static_cast<int>(errc::not_enough_memory);
-            goto unref;
-        }
-
-    read_frame:
-        while(true) {
-            if((ret = av_read_frame(fmt_ctx, pkt)) < 0) goto flush;
-            if(video_stream_idx == pkt->stream_index) break;
-            av_packet_unref(pkt);
-        }
-
-        if((ret = avcodec_send_packet(dec_ctx, pkt)) < 0) goto unref;
-
-        while(true) {
-            if((ret = avcodec_receive_frame(dec_ctx, frame)) < 0)
-                goto unref;
-
-            if(!format || !width || !height) {
-                format = std::make_unique<AVPixelFormat>(static_cast<AVPixelFormat>(frame->format));
-                width  = std::make_unique<int>(frame->width);
-                height = std::make_unique<int>(frame->height);
-            }
-            else if (std::tie(*format, *width, *height) != std::tie(frame->format, frame->width, frame->height))
-                return errc::inconsistent_video_format;
-
-            ret_buffer.clear();
-            if((ret = av_image_get_buffer_size(*format, *width, *height, 1)) < 0)
-                goto unref;
-            ret_buffer.resize(static_cast<std::size_t>(ret));
-
-            if((ret = av_image_copy_to_buffer(reinterpret_cast<std::uint8_t*>(ret_buffer.data()), ret_buffer.size(), frame->data, frame->linesize, *format, *width, *height, 1)) < 0)
-                goto unref;
-        }
-
-    unref:
-        av_packet_unref(pkt);
-    flush:
-        avcodec_send_packet(dec_ctx, nullptr);
-        //if(ret != 0) return static_cast<errc>(-ret);
-        //return std::move(ret_buffer);
-        switch(-ret) {
-        case 0:
-        case static_cast<int>(errc::end_of_file):
-            return decoded_video{std::move(ret_buffer), static_cast<std::uint32_t>(*width), static_cast<std::uint32_t>(*height), *format};
-        case static_cast<int>(errc::resource_unavailable_try_again):
-            goto read_frame;
-        default:
-            return static_cast<errc>(-ret);
-        }
-    }
-}
 
 namespace dd {
     result<void> decoder::close() noexcept {
@@ -159,6 +59,166 @@ namespace dd {
     }
 }
 
+namespace dd {
+    result<decoded_media> decoder::decode(AVHWDeviceType hw_device_type, media_type::flags media_types) noexcept {
+        if(media_types == 0) return decoded_media{};
+        
+
+        if(!(fmt_ctx = avformat_alloc_context()))
+            return errc::not_enough_memory;
+
+        impl::byte_span io_buffer;
+        io_buffer = {static_cast<std::byte*>(av_malloc(io_buffer_size)), io_buffer_size};
+        if(!io_buffer.ptr)
+            return errc::not_enough_memory;
+
+        io_context io_ctx;
+        impl::byte_span input_data = data; //copy the data ptr and size since libav modifies it (we need to perserve the original)
+        if(!(io_ctx = avio_alloc_context(reinterpret_cast<unsigned char*>(io_buffer.ptr), io_buffer.size, 0, &input_data, &packet_handler::read, &packet_handler::write, nullptr)))
+            return errc::not_enough_memory;
+        fmt_ctx->pb = io_ctx;
+
+
+        int err = 0;
+        if((err = -avformat_open_input(&fmt_ctx, nullptr, nullptr, nullptr)) > 0)
+            return static_cast<errc>(err);
+
+        if((err = -avformat_find_stream_info(fmt_ctx, nullptr)) > 0)
+            return static_cast<errc>(err);
+
+        int video_stream_idx = 0, audio_stream_idx = 0;
+        
+        if(media_types & media_type::video)
+            RESULT_TRY_COPY(video_stream_idx, create_dec_context(AVMEDIA_TYPE_VIDEO, hw_device_type));
+
+        if(media_types & media_type::audio)
+            RESULT_TRY_COPY(audio_stream_idx, create_dec_context(AVMEDIA_TYPE_AUDIO, hw_device_type));
+
+
+        decoded_media ret = {};
+        codec_context* curr_context = nullptr;
+
+        frame curr_frame;
+        if(!(curr_frame = av_frame_alloc())) 
+            return errc::not_enough_memory;
+
+        packet pkt;
+        if(!(pkt = av_packet_alloc()))
+            return errc::not_enough_memory;
+
+    read_frame:
+        while(true) {
+            if((err = -av_read_frame(fmt_ctx, pkt)) > 0) goto handle_eof;
+            if(video_stream_idx == pkt->stream_index && media_types & media_type::video) { curr_context = std::addressof(video_dec_ctx); break; }
+            if(audio_stream_idx == pkt->stream_index && media_types & media_type::audio) { curr_context = std::addressof(audio_dec_ctx); break; }
+            av_packet_unref(pkt);
+        }
+
+        err = -avcodec_send_packet(*curr_context, pkt);
+        if(err > 0 && err != static_cast<std::int32_t>(errc::resource_unavailable_try_again)) goto handle_eof;
+
+        while(true) {
+            switch((err = -avcodec_receive_frame(*curr_context, curr_frame))) {
+            case 0: 
+                break;
+            case static_cast<std::int32_t>(errc::resource_unavailable_try_again): 
+                av_packet_unref(pkt);
+                goto read_frame;
+            default: 
+                goto handle_eof;
+            }
+
+            decoded_video& ret_video = ret.video;
+            decoded_audio& ret_audio = ret.audio;
+
+
+            if(curr_context != std::addressof(video_dec_ctx)) goto output_audio;
+
+            if(ret_video.format == AV_PIX_FMT_NONE) {
+                ret_video.format = static_cast<AVPixelFormat>(curr_frame->format);
+                ret_video.width  = curr_frame->width;
+                ret_video.height = curr_frame->height;
+            }
+            else if (std::tie(ret_video.format, ret_video.width, ret_video.height) != std::tie(curr_frame->format, curr_frame->width, curr_frame->height))
+                return errc::inconsistent_video_format;
+
+            if(auto r = impl::copy_video(ret_video, curr_frame); !r.has_value()) {
+                err = static_cast<std::int32_t>(r.error());
+                goto handle_eof;
+            }
+        
+
+        output_audio:
+            if(curr_context != std::addressof(audio_dec_ctx)) continue;
+
+            if(ret_audio.format == AV_SAMPLE_FMT_NONE) {
+                ret_audio.format       = static_cast<AVSampleFormat>(curr_frame->format);
+                ret_audio.num_channels = curr_frame->ch_layout.nb_channels;
+                ret_audio.num_samples  = 0;
+                ret_audio.sample_rate  = curr_frame->sample_rate;
+                ret_audio.bit_depth    = av_get_bytes_per_sample(ret_audio.format) * CHAR_BIT;
+                ret_audio.planar       = av_sample_fmt_is_planar(ret_audio.format);
+            }
+            ret_audio.num_samples += curr_frame->nb_samples;
+
+            switch(curr_frame->ch_layout.order) {
+            case AV_CHANNEL_ORDER_NATIVE:
+                for(std::size_t ch = 0; ch < max_audio_channels; ++ch)
+                    if(curr_frame->ch_layout.u.mask & (1ULL << ch))
+                        impl::copy_audio(ret_audio, curr_frame, ch);
+                break;
+
+            case AV_CHANNEL_ORDER_CUSTOM:
+                for(std::size_t i = 0; i < ret_audio.num_channels; ++i) {
+                    const std::uint32_t ch = curr_frame->ch_layout.u.map[i].id;
+                    if(ch < max_audio_channels)
+                        impl::copy_audio(ret_audio, curr_frame, ch);
+                }
+                break;
+
+            default:
+                return errc::invalid_audio_channel_order;
+            }
+
+        }
+
+    handle_eof:
+        switch(err) {
+        case 0:
+        case static_cast<int>(errc::end_of_file):
+            return ret;
+        default:
+            return static_cast<errc>(err);
+        }
+    }
+}
+
+namespace dd {
+    result<int> decoder::create_dec_context(AVMediaType media_type, AVHWDeviceType device_type) noexcept {
+        AVCodec const* decoder = nullptr; 
+        
+        int stream_idx = 0;
+        if((stream_idx = av_find_best_stream(fmt_ctx, media_type, -1, -1, &decoder, 0)) < 0)
+            return static_cast<errc>(-stream_idx);
+        codec_context& dec_ctx = (media_type == AVMEDIA_TYPE_VIDEO ? video_dec_ctx : audio_dec_ctx);
+
+        if(!(dec_ctx = avcodec_alloc_context3(decoder)))
+            return errc::not_enough_memory;
+        
+
+        int err = 0;
+        AVStream* video_stream = fmt_ctx->streams[stream_idx];
+        if((err = -avcodec_parameters_to_context(dec_ctx, video_stream->codecpar)) > 0)
+            return static_cast<errc>(err);
+
+        if(media_type == AVMEDIA_TYPE_VIDEO && device_type != AV_HWDEVICE_TYPE_NONE)
+            RESULT_VERIFY(create_hw_context(device_type, decoder));
+
+        if((err = -avcodec_open2(dec_ctx, decoder, nullptr)) > 0)
+            return static_cast<errc>(err);
+        return stream_idx;
+    }
+}
 
 namespace dd {
     result<void> decoder::create_hw_context(AVHWDeviceType device_type, AVCodec const* decoder) noexcept {
@@ -176,8 +236,8 @@ namespace dd {
             }
         }
 
-        dec_ctx->opaque = &desired_pixel_format;
-        dec_ctx->get_format = [](AVCodecContext* ctx, AVPixelFormat const* pixel_formats) noexcept -> AVPixelFormat {
+        video_dec_ctx->opaque = &desired_pixel_format;
+        video_dec_ctx->get_format = [](AVCodecContext* ctx, AVPixelFormat const* pixel_formats) noexcept -> AVPixelFormat {
             for(AVPixelFormat const* pix_fmts = pixel_formats; *pix_fmts != AV_PIX_FMT_NONE; ++pix_fmts) 
                 if(*pix_fmts == *static_cast<AVPixelFormat*>(ctx->opaque))
                     return *pix_fmts;
@@ -185,9 +245,9 @@ namespace dd {
         };
 
         
-        if (int ret = av_hwdevice_ctx_create(&device_ctx, device_type, nullptr, nullptr, 0); ret < 0)
-            return static_cast<errc>(-ret);
-        dec_ctx->hw_device_ctx = av_buffer_ref(device_ctx);
+        if (int err = -av_hwdevice_ctx_create(&device_ctx, device_type, nullptr, nullptr, 0); err > 0)
+            return static_cast<errc>(err);
+        video_dec_ctx->hw_device_ctx = av_buffer_ref(device_ctx);
 
         return {};
     }
@@ -204,5 +264,20 @@ namespace dd {
             ret[type] = true;
 
         return ret;
+    }
+}
+
+
+namespace dd {
+    result<decoded_audio> decoder::decode_audio_only() noexcept {
+        auto r = decode(AV_HWDEVICE_TYPE_NONE, media_type::audio);
+        if(!r.has_value()) return r.error();
+        return std::move(r)->audio;
+    }
+
+    result<decoded_video> decoder::decode_video_only(AVHWDeviceType hw_device_type) noexcept {
+        auto r = decode(hw_device_type, media_type::video);
+        if(!r.has_value()) return r.error();
+        return std::move(r)->video;
     }
 }

@@ -21,8 +21,12 @@ namespace dd {
 
 namespace dd {
     struct io_context : public impl::av_ptr<AVIOContext, avio_context_free> {
+        using impl::av_ptr<AVIOContext, avio_context_free>::av_ptr;
         using impl::av_ptr<AVIOContext, avio_context_free>::operator=;
+        io_context(io_context&&) noexcept = default;
+        io_context& operator=(io_context&&) noexcept = default;
+        //copy constructor/assignment is implicitly deleted because of av_ptr
 
-        ~io_context() { if(handle) av_freep(&handle->buffer); }
+        ~io_context() noexcept { if(handle) av_freep(&handle->buffer); }
     };
 }

@@ -8,6 +8,7 @@ option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 set(CPP_FILES
     decoder.cpp
     packet_handler.cpp
+    impl/copy.cpp
 )
 list(TRANSFORM CPP_FILES PREPEND src/${PROJECT_NAME}/)
 

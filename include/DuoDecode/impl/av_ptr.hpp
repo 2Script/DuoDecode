@@ -35,6 +35,7 @@ namespace dd::impl {
         av_ptr& operator=(const av_ptr& other) = delete;
 
         constexpr av_ptr& operator=(T* ptr) noexcept {
+            if(handle && handle != ptr) DeleterFn(&handle);
             handle = ptr;
             return *this;
         };

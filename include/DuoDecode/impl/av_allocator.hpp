@@ -31,6 +31,7 @@ namespace dd::impl {
         
         pointer allocate(size_type n, const_void_pointer = nullptr) {
             if(n == 0) return nullptr;
+            av_max_alloc(max_size());
             pointer ret = static_cast<pointer>(av_malloc(n * sizeof(T)));
             if(!ret) __DD_THROW(std::bad_alloc());
             return ret;

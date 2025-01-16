@@ -14,6 +14,7 @@ namespace dd {
     enum class errc : std::int32_t {
         __posix_end = EHWPOISON,
         inconsistent_video_format,
+        invalid_audio_channel_order,
         num_codes = 0,
 
         //avcodec error codes
