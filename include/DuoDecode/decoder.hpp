@@ -1,8 +1,10 @@
 #pragma once
-#include <filesystem>
-#include "DuoDecode/filesystem.hpp"
+#include <iterator>
+#include <type_traits>
 #include "DuoDecode/decoded_media.hpp"
+#include "DuoDecode/device_info.hpp"
 #include "DuoDecode/error.hpp"
+#include "DuoDecode/impl/to_addr.hpp"
 #include "DuoDecode/media_type.hpp"
 #include "DuoDecode/av_types.hpp"
 #include "DuoDecode/impl/byte_span.hpp"
@@ -16,33 +18,45 @@ extern "C" {
 namespace dd {
     class decoder {
     public:
-        decoder() noexcept = default;
-        
-    public:
-        result<void> open(filesystem::path_view input_file) noexcept;
-        result<void> close() noexcept;
+        constexpr decoder() noexcept = default;
+        template<typename It>
+        constexpr decoder(It first, std::size_t count) noexcept : data{reinterpret_cast<std::byte const*>(impl::to_addr(first)), count} {}
 
+        template<typename It, typename End, std::enable_if_t<!std::is_convertible_v<End, std::size_t>, bool> = true>
+        constexpr decoder(It first, End last) noexcept : decoder(first, last - first) {}
+        
+        template<typename T, std::size_t N>
+        constexpr decoder(T (&arr)[N]) noexcept : decoder(std::data(arr), N) {}
+        template<typename T, std::size_t N>
+        constexpr decoder(std::array<T, N>& arr) noexcept : decoder(std::data(arr), N) {}
+        template<typename T, std::size_t N>
+        constexpr decoder(std::array<T, N> const& arr) noexcept : decoder(std::data(arr), N) {}
+
+    public:
         result<decoded_media> decode(AVHWDeviceType hw_device_type = AV_HWDEVICE_TYPE_NONE, media_type::flags media_types = (media_type::video | media_type::audio)) noexcept;
         result<decoded_audio> decode_audio_only() noexcept;
         result<decoded_video> decode_video_only(AVHWDeviceType hw_device_type = AV_HWDEVICE_TYPE_NONE) noexcept;
 
     private:
+        result<void> create_fmt_context() noexcept;
         result<int> create_dec_context(AVMediaType media_type, AVHWDeviceType device_type) noexcept;
         result<void> create_hw_context(AVHWDeviceType device_type, AVCodec const* decoder) noexcept;
 
     public:
         constexpr static std::size_t device_type_count = AV_HWDEVICE_TYPE_D3D12VA + 1;
         std::array<bool, device_type_count> device_types() const noexcept;
+        //result<std::pair<std::vector<device_info>, std::size_t>> devices() const noexcept;
 
     private:
         constexpr static std::size_t io_buffer_size = 0x1000;
 
-        filesystem::mapped_file_handle file_handle;
-        impl::byte_span data = {};//, io_buffer;
+        //copy the data ptr and size to input, since libav modifies it (we need to perserve the original)
+        const impl::byte_span data{};
+        impl::byte_span input{};
         
-
+        std::byte* io_buffer_ptr = nullptr;
+        io_context io_ctx;
         format_context fmt_ctx;
-        //io_context io_ctx;
         codec_context video_dec_ctx, audio_dec_ctx;
         buffer_ref device_ctx;
         //packet pkt;

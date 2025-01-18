@@ -32,59 +32,9 @@ extern "C" {
 
 
 namespace dd {
-    result<void> decoder::open(filesystem::path_view input_file) noexcept {
-        //TODO: result<filesystem::mapped_file_handle> t = filesystem::mapped_file({}, input_path);
-        {
-        auto f = filesystem::mapped_file({}, input_file);
-        if(!f.has_value()) return static_cast<dd::errc>(f.assume_error().value());
-        file_handle = std::move(f).assume_value();
-        data.ptr = file_handle.address();
-        }
-
-        {
-        auto l = file_handle.maximum_extent();
-        if(!l.has_value()) return static_cast<dd::errc>(l.assume_error().value());
-        data.size = std::move(l).assume_value();
-        }
-        //TODO move above to file_decoder
-
-        return {};
-    }
-}
-
-
-namespace dd {
-    result<void> decoder::close() noexcept {
-        return static_cast<result<void>>(file_handle.close());
-    }
-}
-
-namespace dd {
     result<decoded_media> decoder::decode(AVHWDeviceType hw_device_type, media_type::flags media_types) noexcept {
         if(media_types == 0) return decoded_media{};
-        
-
-        if(!(fmt_ctx = avformat_alloc_context()))
-            return errc::not_enough_memory;
-
-        impl::byte_span io_buffer;
-        io_buffer = {static_cast<std::byte*>(av_malloc(io_buffer_size)), io_buffer_size};
-        if(!io_buffer.ptr)
-            return errc::not_enough_memory;
-
-        io_context io_ctx;
-        impl::byte_span input_data = data; //copy the data ptr and size since libav modifies it (we need to perserve the original)
-        if(!(io_ctx = avio_alloc_context(reinterpret_cast<unsigned char*>(io_buffer.ptr), io_buffer.size, 0, &input_data, &packet_handler::read, &packet_handler::write, nullptr)))
-            return errc::not_enough_memory;
-        fmt_ctx->pb = io_ctx;
-
-
-        int err = 0;
-        if((err = -avformat_open_input(&fmt_ctx, nullptr, nullptr, nullptr)) > 0)
-            return static_cast<errc>(err);
-
-        if((err = -avformat_find_stream_info(fmt_ctx, nullptr)) > 0)
-            return static_cast<errc>(err);
+        RESULT_VERIFY(create_fmt_context());
 
         int video_stream_idx = 0, audio_stream_idx = 0;
         
@@ -97,6 +47,7 @@ namespace dd {
 
         decoded_media ret = {};
         codec_context* curr_context = nullptr;
+        int err = 0;
 
         frame curr_frame;
         if(!(curr_frame = av_frame_alloc())) 
@@ -193,6 +144,35 @@ namespace dd {
     }
 }
 
+
+
+namespace dd {
+    result<void> decoder::create_fmt_context() noexcept {
+        if(data.size == 0) return errc::invalid_argument;
+
+        if(!(fmt_ctx = avformat_alloc_context()))
+            return errc::not_enough_memory;
+        
+        io_buffer_ptr = static_cast<std::byte*>(av_malloc(io_buffer_size));
+        if(!io_buffer_ptr) return errc::not_enough_memory;
+
+        input = data; //copy the data ptr and size since libav modifies it (we need to perserve the original)
+        if(!(io_ctx = avio_alloc_context(reinterpret_cast<unsigned char*>(io_buffer_ptr), io_buffer_size, 0, &input, &packet_handler::read, nullptr, nullptr)))
+            return errc::not_enough_memory; 
+        fmt_ctx->pb = io_ctx;
+
+
+        int err = 0;
+        if((err = -avformat_open_input(&fmt_ctx, nullptr, nullptr, nullptr)) > 0)
+            return static_cast<errc>(err);
+
+        if((err = -avformat_find_stream_info(fmt_ctx, nullptr)) > 0)
+            return static_cast<errc>(err);
+
+        return {};
+    }
+}
+
 namespace dd {
     result<int> decoder::create_dec_context(AVMediaType media_type, AVHWDeviceType device_type) noexcept {
         AVCodec const* decoder = nullptr; 
@@ -265,6 +245,12 @@ namespace dd {
 
         return ret;
     }
+    
+
+    //std::pair<std::vector<device_info>, std::size_t> decoder::devices() const noexcept {
+    //    RESULT_VERIFY(create_fmt_context());
+    //    
+    //}
 }
 
 

@@ -3,7 +3,7 @@
 
 namespace dd::impl {
     struct byte_span {
-        std::byte* ptr;
+        std::byte const* ptr;
         std::size_t size;
     };
 }

@@ -15,6 +15,7 @@ namespace dd {
         __posix_end = EHWPOISON,
         inconsistent_video_format,
         invalid_audio_channel_order,
+        decoder_not_open,
         num_codes = 0,
 
         //avcodec error codes

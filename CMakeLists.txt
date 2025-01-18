@@ -16,7 +16,7 @@ add_library(${PROJECT_NAME} ${CPP_FILES})
 
 
 ## compiler args
-list(APPEND CLANG_ARGS "-Wall" "-Wextra" "-fno-rtti")
+list(APPEND CLANG_ARGS "-Wall" "-Wextra" "-fno-rtti" "-fno-exceptions")
 
 target_compile_options(${PROJECT_NAME} PUBLIC ${CLANG_ARGS})
 target_compile_options(${PROJECT_NAME} PUBLIC "$<$<CONFIG:RELEASE>:-Werror>")
