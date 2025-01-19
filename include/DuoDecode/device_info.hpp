@@ -10,5 +10,6 @@ namespace dd {
         std::string name;
         std::string description;
         std::array<bool, AVMEDIA_TYPE_NB> media_types;
+        bool default_device;
     };
 }

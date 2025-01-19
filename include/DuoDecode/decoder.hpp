@@ -1,5 +1,6 @@
 #pragma once
 #include <iterator>
+#include <optional>
 #include <type_traits>
 #include "DuoDecode/decoded_media.hpp"
 #include "DuoDecode/device_info.hpp"
@@ -45,7 +46,7 @@ namespace dd {
     public:
         constexpr static std::size_t device_type_count = AV_HWDEVICE_TYPE_D3D12VA + 1;
         std::array<bool, device_type_count> device_types() const noexcept;
-        //result<std::pair<std::vector<device_info>, std::size_t>> devices() const noexcept;
+        //result<std::pair<std::vector<device_info>, std::optional<std::size_t>>> devices() noexcept;
 
     private:
         constexpr static std::size_t io_buffer_size = 0x1000;

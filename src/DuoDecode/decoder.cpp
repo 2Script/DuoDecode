@@ -1,7 +1,7 @@
 #include "DuoDecode/decoder.hpp"
 #include <climits>
-#include <iterator>
 #include <memory>
+#include <optional>
 #include <result/type_traits.hpp>
 #include <result/verify.h>
 #include <type_traits>
@@ -28,6 +28,7 @@ extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/samplefmt.h>
+#include <libavdevice/avdevice.h>
 }
 
 
@@ -187,8 +188,8 @@ namespace dd {
         
 
         int err = 0;
-        AVStream* video_stream = fmt_ctx->streams[stream_idx];
-        if((err = -avcodec_parameters_to_context(dec_ctx, video_stream->codecpar)) > 0)
+        AVStream* stream = fmt_ctx->streams[stream_idx];
+        if((err = -avcodec_parameters_to_context(dec_ctx, stream->codecpar)) > 0)
             return static_cast<errc>(err);
 
         if(media_type == AVMEDIA_TYPE_VIDEO && device_type != AV_HWDEVICE_TYPE_NONE)
@@ -247,10 +248,37 @@ namespace dd {
     }
     
 
-    //std::pair<std::vector<device_info>, std::size_t> decoder::devices() const noexcept {
-    //    RESULT_VERIFY(create_fmt_context());
-    //    
-    //}
+    /*result<std::pair<std::vector<device_info>, std::optional<std::size_t>>> decoder::devices() const noexcept {
+        RESULT_VERIFY(create_fmt_context());
+        using ret_type = std::pair<std::vector<device_info>, std::optional<std::size_t>>;
+        
+        device_info_list device_list;
+        int err = 0;
+
+        if((err = -avdevice_list_devices(fmt_ctx, &device_list)) > 0)
+            return static_cast<errc>(err);
+
+        if(device_list->nb_devices < 0) return errc::no_such_device;
+        std::size_t num_devices = static_cast<std::size_t>(device_list->nb_devices);
+
+        std::optional<std::size_t> default_device_idx = std::nullopt;
+        if(device_list->default_device > 0) default_device_idx = static_cast<std::size_t>(device_list->default_device);
+
+        std::vector<device_info> ret;
+        ret.reserve(num_devices);
+        for(std::size_t i = 0; i < num_devices; ++i) {
+            AVDeviceInfo* device = device_list->devices[i];
+
+            std::array<bool, AVMEDIA_TYPE_NB> has_media_types;
+            if(device->nb_media_types > 0)
+                for(std::size_t j = 0; j < static_cast<std::size_t>(device->nb_media_types); ++j)
+                    has_media_types[device->media_types[j]] = true;
+                 
+            ret.push_back(device_info{device_list->devices[i]->device_name, device_list->devices[i]->device_description, has_media_types, default_device_idx.has_value() && *default_device_idx == i});
+        }
+
+        return result<ret_type>{std::in_place_type<ret_type>, std::move(ret), std::move(default_device_idx)};
+    }*/
 }
 
 
