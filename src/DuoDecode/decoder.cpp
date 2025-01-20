@@ -11,6 +11,7 @@
 #include "DuoDecode/error.hpp"
 #include "DuoDecode/impl/byte_span.hpp"
 #include "DuoDecode/impl/copy.hpp"
+#include "DuoDecode/impl/device_context.hpp"
 #include "DuoDecode/media_type.hpp"
 #include "DuoDecode/packet_handler.hpp"
 extern "C" {
@@ -33,18 +34,35 @@ extern "C" {
 
 
 namespace dd {
-    result<decoded_media> decoder::decode(AVHWDeviceType hw_device_type, media_type::flags media_types) noexcept {
+    result<decoded_media> decoder::decode(AVHWDeviceType hw_device_type, media_type::flags media_types, result<void>(&device_create_fn)(AVHWDeviceContext*)) noexcept {
         if(media_types == 0) return decoded_media{};
-        RESULT_VERIFY(create_fmt_context());
+
+
+        std::byte* io_buffer_ptr = static_cast<std::byte*>(av_malloc(io_buffer_size));
+        if(!io_buffer_ptr) return errc::not_enough_memory;
+
+        io_context io_ctx;
+        impl::byte_span input = data; //copy the data ptr and size since libav modifies it (we need to perserve the original)
+        if(!(io_ctx = avio_alloc_context(reinterpret_cast<unsigned char*>(io_buffer_ptr), io_buffer_size, 0, &input, &packet_handler::read, nullptr, nullptr)))
+            return errc::not_enough_memory; 
+        RESULT_TRY_MOVE(fmt_ctx, fmt_context(std::addressof(io_ctx)));
+
 
         int video_stream_idx = 0, audio_stream_idx = 0;
         
-        if(media_types & media_type::video)
-            RESULT_TRY_COPY(video_stream_idx, create_dec_context(AVMEDIA_TYPE_VIDEO, hw_device_type));
+        {
+        AVCodec const* decoder = nullptr;
+        if(media_types & media_type::video) {
+            RESULT_TRY_COPY(video_stream_idx, alloc_dec_context(decoder, video_dec_ctx));
+            RESULT_VERIFY(create_hw_context(decoder, hw_device_type, device_create_fn));
+            RESULT_VERIFY(open_dec_context(decoder, video_dec_ctx));
+        }
 
-        if(media_types & media_type::audio)
-            RESULT_TRY_COPY(audio_stream_idx, create_dec_context(AVMEDIA_TYPE_AUDIO, hw_device_type));
-
+        if(media_types & media_type::audio) {
+            RESULT_TRY_COPY(audio_stream_idx, alloc_dec_context(decoder, audio_dec_ctx));
+            RESULT_VERIFY(open_dec_context(decoder, audio_dec_ctx));
+        }
+        }
 
         decoded_media ret = {};
         codec_context* curr_context = nullptr;
@@ -145,43 +163,34 @@ namespace dd {
     }
 }
 
-
-
 namespace dd {
-    result<void> decoder::create_fmt_context() noexcept {
+    result<format_context> decoder::fmt_context(io_context* io_ctx_ref) noexcept {
         if(data.size == 0) return errc::invalid_argument;
 
-        if(!(fmt_ctx = avformat_alloc_context()))
+        format_context ret;
+        if(!(ret = avformat_alloc_context()))
             return errc::not_enough_memory;
         
-        io_buffer_ptr = static_cast<std::byte*>(av_malloc(io_buffer_size));
-        if(!io_buffer_ptr) return errc::not_enough_memory;
-
-        input = data; //copy the data ptr and size since libav modifies it (we need to perserve the original)
-        if(!(io_ctx = avio_alloc_context(reinterpret_cast<unsigned char*>(io_buffer_ptr), io_buffer_size, 0, &input, &packet_handler::read, nullptr, nullptr)))
-            return errc::not_enough_memory; 
-        fmt_ctx->pb = io_ctx;
-
+        if(io_ctx_ref) ret->pb = *io_ctx_ref;
 
         int err = 0;
-        if((err = -avformat_open_input(&fmt_ctx, nullptr, nullptr, nullptr)) > 0)
+        if((err = -avformat_open_input(&ret, nullptr, nullptr, nullptr)) > 0)
             return static_cast<errc>(err);
 
-        if((err = -avformat_find_stream_info(fmt_ctx, nullptr)) > 0)
+        if((err = -avformat_find_stream_info(ret, nullptr)) > 0)
             return static_cast<errc>(err);
 
-        return {};
+        return std::move(ret);
     }
 }
 
+
+
 namespace dd {
-    result<int> decoder::create_dec_context(AVMediaType media_type, AVHWDeviceType device_type) noexcept {
-        AVCodec const* decoder = nullptr; 
-        
+    result<int> decoder::alloc_dec_context(AVCodec const*& decoder, codec_context& dec_ctx) const noexcept {
         int stream_idx = 0;
-        if((stream_idx = av_find_best_stream(fmt_ctx, media_type, -1, -1, &decoder, 0)) < 0)
+        if((stream_idx = av_find_best_stream(fmt_ctx, static_cast<AVMediaType>(std::addressof(dec_ctx) == std::addressof(audio_dec_ctx)), -1, -1, &decoder, 0)) < 0)
             return static_cast<errc>(-stream_idx);
-        codec_context& dec_ctx = (media_type == AVMEDIA_TYPE_VIDEO ? video_dec_ctx : audio_dec_ctx);
 
         if(!(dec_ctx = avcodec_alloc_context3(decoder)))
             return errc::not_enough_memory;
@@ -192,19 +201,20 @@ namespace dd {
         if((err = -avcodec_parameters_to_context(dec_ctx, stream->codecpar)) > 0)
             return static_cast<errc>(err);
 
-        if(media_type == AVMEDIA_TYPE_VIDEO && device_type != AV_HWDEVICE_TYPE_NONE)
-            RESULT_VERIFY(create_hw_context(device_type, decoder));
-
-        if((err = -avcodec_open2(dec_ctx, decoder, nullptr)) > 0)
-            return static_cast<errc>(err);
         return stream_idx;
     }
-}
+    
+    result<void> decoder::open_dec_context(AVCodec const*& decoder, codec_context& dec_ctx) const noexcept {
+        if(int err = -avcodec_open2(dec_ctx, decoder, nullptr); err > 0)
+            return static_cast<errc>(err);
+        return {};
+    }
 
-namespace dd {
-    result<void> decoder::create_hw_context(AVHWDeviceType device_type, AVCodec const* decoder) noexcept {
+
+    result<void> decoder::create_hw_context(AVCodec const* decoder, AVHWDeviceType device_type, result<void>(&device_create_fn)(AVHWDeviceContext*)) noexcept {
+        if(device_type == AV_HWDEVICE_TYPE_NONE) return {};
+        
         AVPixelFormat desired_pixel_format = AV_PIX_FMT_NONE;
-
         for(int i = 0;; ++i) {
             AVCodecHWConfig const* config = avcodec_get_hw_config(decoder, i);
             if(!config) {
@@ -225,14 +235,35 @@ namespace dd {
             return AV_PIX_FMT_NONE; 
         };
 
-        
-        if (int err = -av_hwdevice_ctx_create(&device_ctx, device_type, nullptr, nullptr, 0); err > 0)
+
+        if(!(device_ctx = av_hwdevice_ctx_alloc(device_type)))
+            return errc::not_enough_memory;
+
+        RESULT_VERIFY(device_create_fn(reinterpret_cast<AVHWDeviceContext*>(device_ctx->data)));
+
+        if (int err = -av_hwdevice_ctx_init(device_ctx); err > 0)
             return static_cast<errc>(err);
+
         video_dec_ctx->hw_device_ctx = av_buffer_ref(device_ctx);
 
         return {};
     }
 }
+
+
+namespace dd {
+    //Does the same as calling `av_hwdevice_ctx_create` without alloc and init
+    result<void> decoder::generic_create_device(AVHWDeviceContext* dev_ctx) noexcept {
+        impl::device_context* device_ctx = reinterpret_cast<impl::device_context*>(dev_ctx);
+
+        if (!device_ctx->hw_type->device_create) return errc::function_not_supported;
+  
+        if(int err = -device_ctx->hw_type->device_create(&(device_ctx->p), nullptr, nullptr, 0); err > 0)
+            return static_cast<errc>(err);
+        return {};
+    }
+}
+
 
 
 namespace dd {
